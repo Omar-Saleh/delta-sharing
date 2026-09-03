@@ -267,6 +267,17 @@ val df = spark.read.format("deltaSharing")
   .load(tablePath)
 ```
 
+For a shared view, use timestamp bounds. View CDF is supported for batch reads and returns
+`_change_type` and `_commit_timestamp` without `_commit_version`.
+
+```scala
+val viewChanges = spark.read.format("deltaSharing")
+  .option("readChangeFeed", "true")
+  .option("startingTimestamp", "2026-01-01T00:00:00Z")
+  .option("endingTimestamp", "2026-01-02T00:00:00Z")
+  .load(viewPath)
+```
+
 ### Streaming
 Starting from release 0.6.0, Delta Sharing table can be used as a data source for [Spark Structured Streaming](https://spark.apache.org/docs/latest/structured-streaming-programming-guide.html).
 Once the provider shares a table with history, the recipient can perform a streaming query on the table.

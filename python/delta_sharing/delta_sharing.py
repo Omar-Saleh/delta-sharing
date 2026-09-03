@@ -512,6 +512,8 @@ def load_table_changes_as_spark(
     Either starting_version or starting_timestamp need to be provided. And only one starting/ending
     parameter is accepted by the server. If the end parameter is not provided, the API will use the
     latest table version for it. The parameter range is inclusive in the query.
+    Shared views support batch reads with timestamp bounds only and do not return a
+    ``_commit_version`` column.
 
     :param url: applies format "<profile>#<share>.<schema>.<table>". If delta_sharing_profile
       is provided then "<share>.<schema>.<table>"
@@ -569,6 +571,7 @@ def load_table_changes_as_pandas(
     Either starting_version or starting_timestamp need to be provided. And only one starting/ending
     parameter is accepted by the server. If the end parameter is not provided, the API will use the
     latest table version for it. The parameter range is inclusive in the query.
+    Shared views accept timestamp bounds only and do not return a ``_commit_version`` column.
 
     :param url: a url under the format "<profile>#<share>.<schema>.<table>".
     :param starting_version: The starting version of table changes.
