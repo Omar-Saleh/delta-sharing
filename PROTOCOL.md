@@ -1861,7 +1861,7 @@ This is the API for clients to read data from a table.
 
 Optional: `Content-Type: application/json; charset=utf-8`
 
-Optional: `delta-sharing-capabilities: responseformat=delta;readerfeatures=deletionvectors`, see
+Optional: `delta-sharing-capabilities: responseformat=delta;readerfeatures=deletionvectors;cdfOnViews=true`, see
 [Delta Sharing Capabilities Header](#delta-sharing-capabilities-header) for details.
 
 Optional: `delta-sharing-capabilities: asyncquery=true` to run the query asynchronously and receive a
@@ -2361,6 +2361,21 @@ The change data feed represents row-level changes between versions of a Delta ta
 - _commit_version (type: Long): The table version containing the change.
 - _commit_timestamp (type: Long): The unix timestamp associated when the commit of the change was created, in milliseconds. 
 
+Clients that advertise `cdfOnViews=true` may also use this API to read change data feed from a
+shared view. View queries accept `startingTimestamp` and `endingTimestamp` only. The server MUST
+reject view queries that specify `startingVersion` or `endingVersion`.
+
+For a view CDF response, the server MUST return
+`delta-sharing-capabilities: cdfOnViews=true`. This response capability is the authoritative signal
+that the queried object is a view and that commit versions are unavailable. The response MUST omit
+the `Delta-Table-Version` header and the `version` field from every file action. View results contain
+`_change_type` and `_commit_timestamp`, but do not contain `_commit_version`.
+
+Every view CDF file action MUST be self-contained and directly readable using the logical schema in
+the response metadata. The provider MUST apply any version-dependent Delta semantics, including
+deletion vectors and column mapping, before returning the file. A client is not required to replay a
+Delta log for a view response.
+
 <table>
 <tr>
 <th>HTTP Request</th>
@@ -2429,9 +2444,12 @@ Optional: `delta-sharing-capabilities: responseformat=delta;readerfeatures=delet
 
 `Content-Type: application/x-ndjson; charset=utf-8`
 
-`Delta-Table-Version: {version}`
+For a table response: `Delta-Table-Version: {version}`
 
 **{version}** is a long value which represents the starting version of files in the response.
+
+For a view response: `delta-sharing-capabilities: cdfOnViews=true`. A view response MUST NOT include
+`Delta-Table-Version`.
 
 </td>
 </tr>
@@ -3382,6 +3400,18 @@ readerfeatures is only useful when `responseformat=delta`, it includes values fr
 features](https://github.com/delta-io/delta/blob/master/PROTOCOL.md#table-features). It's set by the
 caller of `DeltaSharingClient` to indicate its ability to process delta readerFeatures.
 
+### cdfOnViews
+The key is `cdfOnViews` and the value is `true` or `false`, for example `cdfOnViews=true`. A client
+sets this capability to `true` to indicate that it can process change data feed responses for
+shared views, including responses without table or file commit versions. As with other capability
+keys, it is case-insensitive.
+
+Servers MUST reject view CDF requests from clients that do not advertise this capability. For every
+successful view CDF request, the server MUST echo `cdfOnViews=true` in the response capabilities
+header. Clients use this response value, rather than the absence of `Delta-Table-Version` alone, to
+identify a view response. This capability applies to both Parquet- and Delta-format response
+actions.
+
 ### includeEndStreamAction
 The key is `includeEndStreamAction` and the value is `true` or `false`, i.e. `includeEndStreamAction=true`.
 
@@ -3651,7 +3681,7 @@ id | String | A unique string for the file in a table. The same file is guarante
 partitionValues | Map<String, String> | A map from partition column to value for this file. See [Partition Value Serialization](#partition-value-serialization) for how to parse the partition values. When the table doesn’t have partition columns, this will be an **empty** map. | Required
 size | Long | The size of this file in bytes. | Required
 timestamp | Long | The timestamp of the file in milliseconds from epoch. | Required
-version | Int32 | The table version of this file. | Required
+version | Int32 | The table version of this file. Required for table CDF responses and MUST be omitted for view CDF responses. | Conditional
 stats | String | Contains statistics (e.g., count, min/max values for columns) about the data in this file. This field may be missing. A file may or may not have stats. This is a serialized JSON string which can be deserialized to a [Statistics Struct](#per-file-statistics). A client can decide whether to use stats or drop it. | Optional
 expirationTimestamp | Long | The unix timestamp corresponding to the expiration of the url, in milliseconds, returned when the server supports the feature. | Optional
 
@@ -3682,7 +3712,7 @@ id | String | A unique string for the file in a table. The same file is guarante
 partitionValues | Map<String, String> | A map from partition column to value for this file. See [Partition Value Serialization](#partition-value-serialization) for how to parse the partition values. When the table doesn’t have partition columns, this will be an **empty** map. | Required
 size | Long | The size of this file in bytes. | Required
 timestamp | Long | The timestamp of the file in milliseconds from epoch. | Required
-version | Int32 | The table version of this file. | Required
+version | Int32 | The table version of this file. Required for table CDF responses and MUST be omitted for view CDF responses. | Conditional
 expirationTimestamp | Long | The unix timestamp corresponding to the expiration of the url, in milliseconds, returned when the server supports the feature. | Optional
 
 Example (for illustration purposes; each JSON object must be a single line in the response):
@@ -3711,7 +3741,7 @@ id | String | A unique string for the file in a table. The same file is guarante
 partitionValues | Map<String, String> | A map from partition column to value for this file. See [Partition Value Serialization](#partition-value-serialization) for how to parse the partition values. When the table doesn’t have partition columns, this will be an **empty** map. | Required
 size | Long | The size of this file in bytes. | Required
 timestamp | Long | The timestamp of the file in milliseconds from epoch. | Required
-version | Int32 | The table version of this file. | Required
+version | Int32 | The table version of this file. Required for table CDF responses and MUST be omitted for view CDF responses. | Conditional
 expirationTimestamp | Long | The unix timestamp corresponding to the expiration of the url, in milliseconds, returned when the server supports the feature. | Optional
 
 Example (for illustration purposes; each JSON object must be a single line in the response):
@@ -4109,7 +4139,7 @@ Field Name | Data Type | Description | Optional/Required
 -|-|-|-
 id | String | A unique string for the file in a table. The same file is guaranteed to have the same id across multiple requests. A client may cache the file content and use this id as a key to decide whether to use the cached file content. The file ID scheme (`parquet` or `delta`, see [`fileidhash`](#file-id-hash-header)) can be selected via that request header. | Required
 deletionVectorFileId | String | A unique string for the deletion vector file in a table. The same deletion vector file is guaranteed to have the same id across multiple requests. A client may cache the file content and use this id as a key to decide whether to use the cached file content. | Optional
-version | Long | The table version of the file, returned when querying a table data with a version or timestamp parameter. | Optional
+version | Long | The table version of the file. It MUST be omitted from view CDF responses. | Optional
 timestamp | Long | The unix timestamp corresponding to the table version of the file, in milliseconds, returned when querying a table data with a version or timestamp parameter. | Optional
 expirationTimestamp | Long | The unix timestamp corresponding to the expiration of the url, in milliseconds, returned when the server supports the feature. | Optional
 deltaSingleAction | Delta SingleAction | Need to be parsed by a delta library as a delta single action, the path field is replaced by pr-signed url. | Required 
