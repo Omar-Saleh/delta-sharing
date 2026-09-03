@@ -2361,6 +2361,25 @@ The change data feed represents row-level changes between versions of a Delta ta
 - _commit_version (type: Long): The table version containing the change.
 - _commit_timestamp (type: Long): The unix timestamp associated when the commit of the change was created, in milliseconds. 
 
+Clients that advertise `versionlessCDF=true` may also use this API for CDF objects that do not
+expose a stable recipient-visible commit sequence, such as shared views. Versionless CDF requests
+accept timestamp bounds only. The server MUST reject `startingVersion` and `endingVersion` for
+these requests.
+
+The server identifies a versionless CDF response with
+`delta-sharing-capabilities: versionlessCDF=true`. The response MUST omit the
+`Delta-Table-Version` header. Its response metadata is the physical schema of the returned files
+and contains `_change_type` and `_commit_timestamp`; it does not contain `_commit_version`.
+The physical `_commit_timestamp` column has Delta `timestamp` type. Unlike the millisecond `Long`
+described above for versioned CDF actions, clients read this value from the file and MUST NOT
+synthesize it from the AddFile wrapper's `timestamp`.
+
+After the Protocol and Metadata actions, both response formats contain only regular AddFile
+actions. Together these actions describe a snapshot that can be scanned as a normal Delta table.
+The AddFile wrapper's `version` and `timestamp`, when present, describe the provider's materialized
+table. They are not CDF commit metadata and clients MUST NOT use them to construct `_commit_version`
+or `_commit_timestamp`.
+
 <table>
 <tr>
 <th>HTTP Request</th>
@@ -2380,7 +2399,7 @@ The change data feed represents row-level changes between versions of a Delta ta
 
 `Authorization: Bearer {token}`
 
-Optional: `delta-sharing-capabilities: responseformat=delta;readerfeatures=deletionvectors`, see
+Optional: `delta-sharing-capabilities: responseformat=delta;readerfeatures=deletionvectors;versionlessCDF=true`, see
 [Delta Sharing Capabilities Header](#delta-sharing-capabilities-header) for details.
 
 </td>
@@ -2429,9 +2448,12 @@ Optional: `delta-sharing-capabilities: responseformat=delta;readerfeatures=delet
 
 `Content-Type: application/x-ndjson; charset=utf-8`
 
-`Delta-Table-Version: {version}`
+For a versioned table response: `Delta-Table-Version: {version}`
 
 **{version}** is a long value which represents the starting version of files in the response.
+
+For a versionless response: `delta-sharing-capabilities: versionlessCDF=true`. A versionless
+response MUST NOT include `Delta-Table-Version`.
 
 </td>
 </tr>
@@ -2444,16 +2466,17 @@ When `responseformat=parquet`, a sequence of JSON strings delimited by newline. 
 The response contains multiple lines:
 - The first line is [a JSON wrapper object](#json-wrapper-object-in-each-line) containing the table [Protocol](#protocol) object.
 - The second line is [a JSON wrapper object](#json-wrapper-object-in-each-line) containing the table [Metadata](#metadata) object.
-- The rest of the lines are [JSON wrapper objects](#json-wrapper-object-in-each-line) for [Data Change Files](#data-change-files) of the change data feed.
-  - Historical [Metadata](#metadata) will be returned if includeHistoricalMetadata is set to true.
-  - The ordering of the lines doesn't matter.
+- For a versioned response, the rest of the lines are [JSON wrapper objects](#json-wrapper-object-in-each-line) for [Data Change Files](#data-change-files) of the change data feed.
+- For a versionless response, the rest of the lines are regular [File](#file) AddFile wrapper objects.
+- For a versioned response, historical [Metadata](#metadata) will be returned if includeHistoricalMetadata is set to true. A versionless response remains snapshot-shaped and does not include historical Metadata.
+- The ordering of the lines doesn't matter.
 
 When `responseformat=delta`, a sequence of JSON strings delimited by newline. Each line is a JSON object defined in [API Response Actions in Delta Format](#api-response-actions-in-delta-format).
 - The first line is [a JSON wrapper object](#json-wrapper-object-in-each-line-in-delta) containing the delta [Protocol](#protocol-in-delta-format) object.
 - The second line is [a JSON wrapper object](#json-wrapper-object-in-each-line-in-delta) containing the delta [Metadata](#metadata-in-delta-format) object.
 - The rest of the lines are [JSON wrapper objects](#json-wrapper-object-in-each-line) for [Files](#file-in-delta-format) of the change data feed.
-  - Historical [Metadata](#metadata) will be returned if includeHistoricalMetadata is set to true.
-  - Historical [Protocol](#protocol-in-delta-format) actions will be returned if includeHistoricalProtocol is set to true. This is only supported for the delta response format.
+  - For a versioned response, historical [Metadata](#metadata) will be returned if includeHistoricalMetadata is set to true. A versionless response remains snapshot-shaped and does not include historical Metadata.
+  - For a versioned response, historical [Protocol](#protocol-in-delta-format) actions will be returned if includeHistoricalProtocol is set to true. This is only supported for the delta response format; versionless responses do not include historical Protocol actions.
   - The ordering of the lines doesn't matter.
 
 </td>
@@ -3382,6 +3405,17 @@ readerfeatures is only useful when `responseformat=delta`, it includes values fr
 features](https://github.com/delta-io/delta/blob/master/PROTOCOL.md#table-features). It's set by the
 caller of `DeltaSharingClient` to indicate its ability to process delta readerFeatures.
 
+### versionlessCDF
+The key is `versionlessCDF` and the value is `true` or `false`, for example
+`versionlessCDF=true`. A batch client sets this capability to `true` when it can process CDF
+responses without a recipient-visible commit sequence. Capability keys and values are
+case-insensitive.
+
+For a successful versionless CDF request, the server MUST echo `versionlessCDF=true` in the
+response capabilities header. Clients use this response value, rather than the absence of
+`Delta-Table-Version` alone, to select the versionless scan path. This capability applies to both
+Parquet- and Delta-format responses. Streaming clients do not advertise this capability.
+
 ### includeEndStreamAction
 The key is `includeEndStreamAction` and the value is `true` or `false`, i.e. `includeEndStreamAction=true`.
 
@@ -3620,8 +3654,8 @@ id | String | A unique string for the file in a table. The same file is guarante
 partitionValues | Map<String, String> | A map from partition column to value for this file. See [Partition Value Serialization](#partition-value-serialization) for how to parse the partition values. When the table doesn’t have partition columns, this will be an **empty** map. | Required
 size | Long | The size of this file in bytes. | Required
 stats | String | Contains statistics (e.g., count, min/max values for columns) about the data in this file. This field may be missing. A file may or may not have stats. This is a serialized JSON string which can be deserialized to a [Statistics Struct](#per-file-statistics). A client can decide whether to use stats or drop it. | Optional
-version | Long | The table version of the file, returned when querying a table data with a version or timestamp parameter. | Optional
-timestamp | Long | The unix timestamp corresponding to the table version of the file, in milliseconds, returned when querying a table data with a version or timestamp parameter. | Optional
+version | Long | The table version of the file, returned when querying table data with a version or timestamp parameter. In a versionless CDF response, this may identify the provider's materialized table and MUST NOT be interpreted as `_commit_version`. | Optional
+timestamp | Long | The unix timestamp corresponding to the table version of the file, in milliseconds. In a versionless CDF response, this may identify the provider's materialized table and MUST NOT be interpreted as `_commit_timestamp`. | Optional
 expirationTimestamp | Long | The unix timestamp corresponding to the expiration of the url, in milliseconds, returned when the server supports the feature. | Optional
 
 Example (for illustration purposes; each JSON object must be a single line in the response):
@@ -4109,8 +4143,8 @@ Field Name | Data Type | Description | Optional/Required
 -|-|-|-
 id | String | A unique string for the file in a table. The same file is guaranteed to have the same id across multiple requests. A client may cache the file content and use this id as a key to decide whether to use the cached file content. The file ID scheme (`parquet` or `delta`, see [`fileidhash`](#file-id-hash-header)) can be selected via that request header. | Required
 deletionVectorFileId | String | A unique string for the deletion vector file in a table. The same deletion vector file is guaranteed to have the same id across multiple requests. A client may cache the file content and use this id as a key to decide whether to use the cached file content. | Optional
-version | Long | The table version of the file, returned when querying a table data with a version or timestamp parameter. | Optional
-timestamp | Long | The unix timestamp corresponding to the table version of the file, in milliseconds, returned when querying a table data with a version or timestamp parameter. | Optional
+version | Long | The table version of the file. In a versionless CDF response, this may identify the provider's materialized table and MUST NOT be interpreted as `_commit_version`. | Optional
+timestamp | Long | The unix timestamp corresponding to the table version of the file, in milliseconds. In a versionless CDF response, this may identify the provider's materialized table and MUST NOT be interpreted as `_commit_timestamp`. | Optional
 expirationTimestamp | Long | The unix timestamp corresponding to the expiration of the url, in milliseconds, returned when the server supports the feature. | Optional
 deltaSingleAction | Delta SingleAction | Need to be parsed by a delta library as a delta single action, the path field is replaced by pr-signed url. | Required 
 
