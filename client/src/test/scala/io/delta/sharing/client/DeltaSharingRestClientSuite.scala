@@ -50,6 +50,13 @@ class DeltaSharingRestClientSuite extends DeltaSharingIntegrationTest {
 
   import DeltaSharingRestClient._
 
+  private val unitTestProfileProvider = new DeltaSharingProfileProvider {
+    override def getProfile: DeltaSharingProfile = BearerTokenDeltaSharingProfile(
+      shareCredentialsVersion = Some(1),
+      endpoint = "http://localhost",
+      bearerToken = "token")
+  }
+
   private var spark: org.apache.spark.sql.SparkSession = _
 
   override def beforeAll(): Unit = {
@@ -104,6 +111,168 @@ class DeltaSharingRestClientSuite extends DeltaSharingIntegrationTest {
     }
     intercept[IllegalArgumentException] {
       DeltaSharingRestClient.parsePath("foo#a.b.c.", emptyShareCredentialsOptions)
+    }
+  }
+
+  test("parse versionless view CDF responses") {
+    Seq(RESPONSE_FORMAT_PARQUET, RESPONSE_FORMAT_DELTA).foreach { responseFormat =>
+      val metadata =
+        """{"id":"view-id","format":{"provider":"parquet"},"schemaString":"{\"type\":\"struct\",\"fields\":[]}","partitionColumns":[]}"""
+      val lines = if (responseFormat == RESPONSE_FORMAT_DELTA) {
+        Seq(
+          """{"protocol":{"deltaProtocol":{"minReaderVersion":1,"minWriterVersion":2}}}""",
+          s"""{"metaData":{"deltaMetadata":$metadata}}""",
+          """{"file":{"id":"change","timestamp":1234,"deltaSingleAction":{"cdc":{"path":"https://example.com/change.parquet","partitionValues":{},"size":10}}}}"""
+        )
+      } else {
+        Seq(
+          """{"protocol":{"minReaderVersion":1}}""",
+          s"""{"metaData":$metadata}""",
+          """{"cdf":{"url":"https://example.com/change.parquet","id":"change","partitionValues":{},"size":10,"timestamp":1234}}"""
+        )
+      }
+
+      val client = new DeltaSharingRestClient(
+        profileProvider = unitTestProfileProvider,
+        responseFormat = responseFormat) {
+        override def getNDJson(
+            target: String,
+            requireVersion: Boolean,
+            setIncludeEndStreamAction: Boolean,
+            requestFileIdHash: Option[String] = None): ParsedDeltaSharingResponse = {
+          ParsedDeltaSharingResponse(
+            version = 0L,
+            respondedFormat = responseFormat,
+            lines = lines,
+            capabilitiesMap = Map(
+              RESPONSE_FORMAT -> responseFormat,
+              VERSIONLESS_CDF -> "true"),
+            hasTableVersion = false)
+        }
+      }
+
+      try {
+        val result = client.getCDFFiles(
+          Table("view", "schema", "share"),
+          Map("startingTimestamp" -> "2026-01-01T00:00:00Z"),
+          includeHistoricalMetadata = false,
+          fileIdHash = None)
+        assert(result.isVersionlessCDF)
+        assert(result.cdfFiles == Seq(AddCDCFile(
+          "https://example.com/change.parquet",
+          "change",
+          Map.empty,
+          10L,
+          version = null,
+          timestamp = 1234L)))
+      } finally {
+        client.close()
+      }
+    }
+  }
+
+  test("reject versionless CDF response without versionless CDF capability") {
+    val lines = Seq(
+      """{"protocol":{"minReaderVersion":1}}""",
+      """{"metaData":{"id":"view-id","format":{"provider":"parquet"},"schemaString":"{\"type\":\"struct\",\"fields\":[]}","partitionColumns":[]}}"""
+    )
+    val client = new DeltaSharingRestClient(unitTestProfileProvider) {
+      override def getNDJson(
+          target: String,
+          requireVersion: Boolean,
+          setIncludeEndStreamAction: Boolean,
+          requestFileIdHash: Option[String] = None): ParsedDeltaSharingResponse = {
+        ParsedDeltaSharingResponse(
+          version = 0L,
+          respondedFormat = RESPONSE_FORMAT_PARQUET,
+          lines = lines,
+          capabilitiesMap = Map.empty,
+          hasTableVersion = false)
+      }
+    }
+
+    try {
+      val error = intercept[IllegalStateException] {
+        client.getCDFFiles(
+          Table("view", "schema", "share"),
+          Map("startingTimestamp" -> "2026-01-01T00:00:00Z"),
+          includeHistoricalMetadata = false,
+          fileIdHash = None)
+      }
+      assert(error.getMessage.contains(
+        "Cannot find Delta-Table-Version or versionlesscdf=true in the response header"))
+    } finally {
+      client.close()
+    }
+  }
+
+  test("reject version bounds for view CDF responses") {
+    val lines = Seq(
+      """{"protocol":{"minReaderVersion":1}}""",
+      """{"metaData":{"id":"view-id","format":{"provider":"parquet"},"schemaString":"{\"type\":\"struct\",\"fields\":[]}","partitionColumns":[]}}"""
+    )
+    val client = new DeltaSharingRestClient(unitTestProfileProvider) {
+      override def getNDJson(
+          target: String,
+          requireVersion: Boolean,
+          setIncludeEndStreamAction: Boolean,
+          requestFileIdHash: Option[String] = None): ParsedDeltaSharingResponse = {
+        ParsedDeltaSharingResponse(
+          version = 0L,
+          respondedFormat = RESPONSE_FORMAT_PARQUET,
+          lines = lines,
+          capabilitiesMap = Map(VERSIONLESS_CDF -> "true"),
+          hasTableVersion = false)
+      }
+    }
+
+    try {
+      val error = intercept[IllegalArgumentException] {
+        client.getCDFFiles(
+          Table("view", "schema", "share"),
+          Map("startingVersion" -> "1"),
+          includeHistoricalMetadata = false,
+          fileIdHash = None)
+      }
+      assert(error.getMessage.contains(
+        "View CDF queries only support startingTimestamp and endingTimestamp"))
+    } finally {
+      client.close()
+    }
+  }
+
+  test("reject table CDF actions without versions") {
+    val lines = Seq(
+      """{"protocol":{"minReaderVersion":1}}""",
+      """{"metaData":{"id":"table-id","format":{"provider":"parquet"},"schemaString":"{\"type\":\"struct\",\"fields\":[]}","partitionColumns":[]}}""",
+      """{"cdf":{"url":"https://example.com/change.parquet","id":"change","partitionValues":{},"size":10,"timestamp":1234}}"""
+    )
+    val client = new DeltaSharingRestClient(unitTestProfileProvider) {
+      override def getNDJson(
+          target: String,
+          requireVersion: Boolean,
+          setIncludeEndStreamAction: Boolean,
+          requestFileIdHash: Option[String] = None): ParsedDeltaSharingResponse = {
+        ParsedDeltaSharingResponse(
+          version = 1L,
+          respondedFormat = RESPONSE_FORMAT_PARQUET,
+          lines = lines,
+          capabilitiesMap = Map.empty,
+          hasTableVersion = true)
+      }
+    }
+
+    try {
+      val error = intercept[IllegalStateException] {
+        client.getCDFFiles(
+          Table("table", "schema", "share"),
+          Map("startingVersion" -> "1"),
+          includeHistoricalMetadata = false,
+          fileIdHash = None)
+      }
+      assert(error.getMessage.contains("Table CDF file actions must include a version"))
+    } finally {
+      client.close()
     }
   }
 
