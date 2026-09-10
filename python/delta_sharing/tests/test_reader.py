@@ -947,6 +947,60 @@ def test_table_changes_empty(tmp_path):
     validate_pdf(pdf)
 
 
+@pytest.mark.parametrize("use_delta_format", [False, True])
+def test_view_changes_to_pandas_omit_commit_version(tmp_path, use_delta_format):
+    change_timestamp = 1652140000000
+    change_data = pd.DataFrame(
+        {"a": [1, 2], DeltaSharingReader._change_type_col_name(): ["insert", "delete"]}
+    )
+    change_data.to_parquet(tmp_path / "view-changes.parquet")
+
+    class RestClientMock:
+        def list_table_changes(self, table, cdfOptions):
+            assert cdfOptions.starting_timestamp == "2022-05-09T00:00:00Z"
+            return ListTableChangesResponse(
+                protocol=None,
+                metadata=Metadata(
+                    schema_string=(
+                        '{"fields":['
+                        '{"metadata":{},"name":"a","nullable":true,"type":"long"}'
+                        '],"type":"struct"}'
+                    )
+                ),
+                actions=[
+                    AddCdcFile(
+                        url=str(tmp_path / "view-changes.parquet"),
+                        id="view-changes",
+                        partition_values={},
+                        size=0,
+                        timestamp=change_timestamp,
+                        version=None,
+                    )
+                ],
+                lines=[],
+                is_versionless_cdf=True,
+            )
+
+        def set_delta_format_header(self, for_cdf=False):
+            return
+
+        def remove_delta_format_header(self):
+            return
+
+    reader = DeltaSharingReader(
+        Table("view", "share", "schema"),
+        RestClientMock(),
+        use_delta_format=use_delta_format,
+    )
+    result = reader.table_changes_to_pandas(
+        CdfOptions(starting_timestamp="2022-05-09T00:00:00Z")
+    )
+
+    assert result.columns.tolist() == ["a", "_change_type", "_commit_timestamp"]
+    assert "_commit_version" not in result
+    assert result["_commit_timestamp"].tolist() == [change_timestamp, change_timestamp]
+
+
 def test_table_changes_to_pandas_non_partitioned_delta(tmp_path):
     # Create basic data frame.
     pdf1 = pd.DataFrame({"a": [1, 2, 3], "b": ["a", "b", "c"]})

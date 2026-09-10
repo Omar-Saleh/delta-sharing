@@ -391,6 +391,8 @@ class DeltaSharingReader:
         self._rest_client.set_delta_format_header(for_cdf=True)
         try:
             response = self._rest_client.list_table_changes(self._table, cdfOptions)
+            if response.is_versionless_cdf:
+                return self.__table_changes_response_to_pandas(response)
             lines = response.lines
 
             # first line is protocol
@@ -481,9 +483,14 @@ class DeltaSharingReader:
 
         response = self._rest_client.list_table_changes(self._table, cdfOptions)
 
+        return self.__table_changes_response_to_pandas(response)
+
+    def __table_changes_response_to_pandas(self, response) -> pd.DataFrame:
         schema_json = loads(response.metadata.schema_string)
         converters = to_converters(schema_json)
-        schema_with_cdf = self._add_special_cdf_schema(schema_json)
+        schema_with_cdf = self._add_special_cdf_schema(
+            schema_json, include_commit_version=not response.is_versionless_cdf
+        )
 
         if len(response.actions) == 0:
             return get_empty_table(schema_with_cdf)
@@ -683,9 +690,12 @@ class DeltaSharingReader:
         return "_commit_version"
 
     @staticmethod
-    def _add_special_cdf_schema(schema_json: dict) -> dict:
+    def _add_special_cdf_schema(
+        schema_json: dict, include_commit_version: bool = True
+    ) -> dict:
         fields = schema_json["fields"]
         fields.append({"name": DeltaSharingReader._change_type_col_name(), "type": "string"})
-        fields.append({"name": DeltaSharingReader._commit_version_col_name(), "type": "long"})
+        if include_commit_version:
+            fields.append({"name": DeltaSharingReader._commit_version_col_name(), "type": "long"})
         fields.append({"name": DeltaSharingReader._commit_timestamp_col_name(), "type": "long"})
         return schema_json

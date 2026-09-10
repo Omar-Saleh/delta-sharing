@@ -22,6 +22,7 @@ from delta_sharing.protocol import (
     AddFile,
     DeltaSharingProfile,
     Format,
+    FileAction,
     Metadata,
     Protocol,
     RemoveFile,
@@ -29,6 +30,31 @@ from delta_sharing.protocol import (
     Share,
     Table,
 )
+
+
+def test_delta_cdf_file_without_version():
+    action = FileAction.from_delta_json(
+        {
+            "id": "file-id",
+            "timestamp": 1234,
+            "deltaSingleAction": {
+                "cdc": {
+                    "path": "https://example.com/cdf.parquet",
+                    "partitionValues": {},
+                    "size": 10,
+                }
+            },
+        }
+    )
+
+    assert action == AddCdcFile(
+        url="https://example.com/cdf.parquet",
+        id="file-id",
+        partition_values={},
+        size=10,
+        timestamp=1234,
+        version=None,
+    )
 
 
 def test_share_profile(tmp_path):
