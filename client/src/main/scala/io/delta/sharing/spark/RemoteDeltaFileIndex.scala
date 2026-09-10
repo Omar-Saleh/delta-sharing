@@ -51,8 +51,13 @@ private[sharing] case class RemoteDeltaFileIndexParams(
     spark: SparkSession,
     snapshotAtAnalysis: RemoteSnapshot,
     profileProvider: DeltaSharingProfileProvider,
-    queryParamsHashId: Option[String] = None) {
+    queryParamsHashId: Option[String] = None,
+    includeCommitVersion: Boolean = true,
+    partitionSchemaOverride: Option[StructType] = None,
+    useActionSizes: Boolean = false) {
   def path: Path = snapshotAtAnalysis.getTablePath
+  def partitionSchema: StructType =
+    partitionSchemaOverride.getOrElse(snapshotAtAnalysis.partitionSchema)
 }
 
 // A base class for all file indices for remote delta log.
@@ -62,7 +67,7 @@ private[sharing] abstract class RemoteDeltaFileIndexBase(
 
   override def sizeInBytes: Long = params.snapshotAtAnalysis.sizeInBytes
 
-  override def partitionSchema: StructType = params.snapshotAtAnalysis.partitionSchema
+  override def partitionSchema: StructType = params.partitionSchema
 
   override def rootPaths: Seq[Path] = params.path :: Nil
 
@@ -123,7 +128,7 @@ private[sharing] abstract class RemoteDeltaFileIndexBase(
 
   protected def getColumnFilter(partitionFilters: Seq[Expression]): Column = {
     val rewrittenFilters = DeltaTableUtils.rewritePartitionFilters(
-      params.snapshotAtAnalysis.partitionSchema,
+      params.partitionSchema,
       params.spark.sessionState.conf.resolver,
       partitionFilters,
       params.spark.sessionState.conf.sessionLocalTimeZone)
@@ -242,8 +247,12 @@ private[sharing] abstract class RemoteDeltaCDFFileIndexBase(
     auxPartitionSchema: Map[String, DataType] = Map.empty)
     extends RemoteDeltaFileIndexBase(params) {
 
+  override def sizeInBytes: Long = {
+    if (params.useActionSizes) actions.map(_.size).sum else super.sizeInBytes
+  }
+
   override def partitionSchema: StructType = {
-    DeltaTableUtils.updateSchema(params.snapshotAtAnalysis.partitionSchema, auxPartitionSchema)
+    DeltaTableUtils.updateSchema(params.partitionSchema, auxPartitionSchema)
   }
 
   override def inputFiles: Array[String] = {
@@ -259,7 +268,7 @@ private[sharing] case class RemoteDeltaCDFAddFileIndex(
     extends RemoteDeltaCDFFileIndexBase(
       params,
       addFiles,
-      CDFColumnInfo.getInternalPartitonSchemaForCDFAddRemoveFile) {
+      CDFColumnInfo.getInternalPartitonSchemaForCDFAddRemoveFile(params.includeCommitVersion)) {
   override def listFiles(
     partitionFilters: Seq[Expression],
     dataFilters: Seq[Expression]): Seq[PartitionDirectory] = {
@@ -286,7 +295,7 @@ private[sharing] case class RemoteDeltaCDCFileIndex(
     extends RemoteDeltaCDFFileIndexBase(
       params,
       cdfFiles,
-      CDFColumnInfo.getInternalPartitonSchemaForCDC) {
+      CDFColumnInfo.getInternalPartitonSchemaForCDC(params.includeCommitVersion)) {
 
   override def listFiles(
     partitionFilters: Seq[Expression],
@@ -314,7 +323,7 @@ private[sharing] case class RemoteDeltaCDFRemoveFileIndex(
     extends RemoteDeltaCDFFileIndexBase(
       params,
       removeFiles,
-      CDFColumnInfo.getInternalPartitonSchemaForCDFAddRemoveFile) {
+      CDFColumnInfo.getInternalPartitonSchemaForCDFAddRemoveFile(params.includeCommitVersion)) {
   override def listFiles(
     partitionFilters: Seq[Expression],
     dataFilters: Seq[Expression]): Seq[PartitionDirectory] = {

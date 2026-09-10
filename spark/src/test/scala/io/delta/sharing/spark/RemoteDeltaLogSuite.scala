@@ -30,7 +30,16 @@ import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types._
 
 import io.delta.sharing.client.{DeltaSharingFileSystem, DeltaSharingRestClient}
-import io.delta.sharing.client.model.Table
+import io.delta.sharing.client.model.{
+  AddCDCFile,
+  AddFileForCDF,
+  DeltaTableFiles,
+  Format,
+  Metadata,
+  Protocol,
+  RemoveFile,
+  Table
+}
 import io.delta.sharing.client.util.ConfUtils
 import io.delta.sharing.spark.util.QueryUtils
 
@@ -829,6 +838,81 @@ class RemoteDeltaLogSuite extends SparkFunSuite with SharedSparkSession {
     assert(removeInputFileList.size == 2)
     assert(removeInputFileList(0) == "delta-sharing:/prefix.test/cdf_rem1/400")
     assert(removeInputFileList(1) == "delta-sharing:/prefix.test/cdf_rem2/420")
+  }
+
+  test("view CDF uses response metadata and omits commit version") {
+    val viewMetadata = Metadata(
+      id = "view-id",
+      format = Format(),
+      schemaString =
+        """{"type":"struct","fields":[{"name":"value","type":"string","nullable":true,""" +
+          """"metadata":{}},{"name":"part","type":"string","nullable":true,"metadata":{}}]}""",
+      partitionColumns = Seq("part"))
+    val viewFiles = DeltaTableFiles(
+      version = 0L,
+      protocol = Protocol(1),
+      metadata = viewMetadata,
+      addFiles = Seq(
+        AddFileForCDF(
+          "add-a.parquet", "add-a", Map("part" -> "a"), 10L,
+          version = null, timestamp = 1000L),
+        AddFileForCDF(
+          "add-z.parquet", "add-z", Map("part" -> "z"), 11L,
+          version = null, timestamp = 1000L)),
+      cdfFiles = Seq(AddCDCFile(
+        "cdc.parquet", "cdc", Map("part" -> "b"), 10L, version = null, timestamp = 1000L)),
+      removeFiles = Seq(RemoveFile(
+        "remove.parquet", "remove", Map("part" -> "c"), 10L,
+        version = null, timestamp = 1000L)),
+      respondedFormat = DeltaSharingRestClient.RESPONSE_FORMAT_PARQUET,
+      isVersionlessCDF = true)
+    val client = new TestDeltaSharingClient() {
+      override def getCDFFiles(
+          table: Table,
+          cdfOptions: Map[String, String],
+          includeHistoricalMetadata: Boolean,
+          fileIdHash: Option[String],
+          includeHistoricalProtocol: Boolean = false): DeltaTableFiles = viewFiles
+    }
+    client.clear()
+    val snapshot = new RemoteSnapshot(new Path("view"), client, Table("view", "schema", "share"))
+    val relation = RemoteDeltaCDFRelation(
+      SparkSession.active,
+      snapshot,
+      client,
+      Table("view", "schema", "share"),
+      Map(DeltaSharingOptions.CDF_START_TIMESTAMP -> "2026-01-01T00:00:00Z"))
+
+    assert(relation.schema == StructType(Array(
+      StructField("value", StringType),
+      StructField("part", StringType),
+      StructField("_commit_timestamp", LongType),
+      StructField("_change_type", StringType))))
+
+    val params = relation.fileIndexParams
+    val addIndex = RemoteDeltaCDFAddFileIndex(params, viewFiles.addFiles)
+    val cdcIndex = RemoteDeltaCDCFileIndex(params, viewFiles.cdfFiles)
+    val removeIndex = RemoteDeltaCDFRemoveFileIndex(params, viewFiles.removeFiles)
+    assert(!viewFiles.addFiles.head.getPartitionValuesInDF().contains("_commit_version"))
+    assert(addIndex.partitionSchema.fieldNames.sameElements(
+      Array("part", "_commit_timestamp", "_change_type")))
+    assert(cdcIndex.partitionSchema.fieldNames.sameElements(
+      Array("part", "_commit_timestamp")))
+    assert(removeIndex.partitionSchema.fieldNames.sameElements(
+      Array("part", "_commit_timestamp", "_change_type")))
+    assert(addIndex.sizeInBytes == 21L)
+    assert(cdcIndex.sizeInBytes == 10L)
+    assert(removeIndex.sizeInBytes == 10L)
+    val partFilter = SqlEqualTo(
+      SqlAttributeReference("part", StringType)(),
+      SqlLiteral.create("a", StringType))
+    val filteredAddFiles = addIndex.listFiles(Seq(partFilter), Nil)
+    assert(filteredAddFiles.size == 1)
+    assert(filteredAddFiles.head.files.size == 1)
+    assert(filteredAddFiles.head.files.head.getPath.toString.endsWith("/add-a/10"))
+    assert(cdcIndex.listFiles(Nil, Nil).nonEmpty)
+    assert(removeIndex.listFiles(Nil, Nil).nonEmpty)
+    assert(TestDeltaSharingClient.numMetadataCalled == 0)
   }
 
   test("Limit pushdown test") {

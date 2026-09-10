@@ -435,14 +435,24 @@ private[sharing] object DeltaTableUtils {
 
   // Adds cdc schema to the table schema.
   def addCdcSchema(tableSchema: StructType): StructType = {
-    updateSchema(tableSchema, CDFColumnInfo.getInternalPartitonSchemaForCDFAddRemoveFile())
+    addCdcSchema(tableSchema, includeCommitVersion = true)
+  }
+
+  def addCdcSchema(tableSchema: StructType, includeCommitVersion: Boolean): StructType = {
+    updateSchema(
+      tableSchema,
+      CDFColumnInfo.getInternalPartitonSchemaForCDFAddRemoveFile(includeCommitVersion))
   }
 
   // Adds cdc schema to the table schema string.
   def addCdcSchema(tableSchemaStr: String): StructType = {
+    addCdcSchema(tableSchemaStr, includeCommitVersion = true)
+  }
+
+  def addCdcSchema(tableSchemaStr: String, includeCommitVersion: Boolean): StructType = {
     updateSchema(
       toSchema(tableSchemaStr),
-      CDFColumnInfo.getInternalPartitonSchemaForCDFAddRemoveFile()
+      CDFColumnInfo.getInternalPartitonSchemaForCDFAddRemoveFile(includeCommitVersion)
     )
   }
 

@@ -27,12 +27,19 @@ private[sharing] object CDFColumnInfo {
   val change_type_col_name = "_change_type"
 
   // Returns internal partition schema for internal columns for CDC actions.
-  def getInternalPartitonSchemaForCDC(): Map[String, DataType] =
-    Map(commit_version_col_name -> LongType, commit_timestamp_col_name -> LongType)
+  def getInternalPartitonSchemaForCDC(
+      includeCommitVersion: Boolean = true): Map[String, DataType] = {
+    if (includeCommitVersion) {
+      Map(commit_version_col_name -> LongType, commit_timestamp_col_name -> LongType)
+    } else {
+      Map(commit_timestamp_col_name -> LongType)
+    }
+  }
 
   // Returns internal partition schema for internal columns for CDF add/remove actions.
-  def getInternalPartitonSchemaForCDFAddRemoveFile(): Map[String, DataType] =
-    getInternalPartitonSchemaForCDC() + (change_type_col_name -> StringType)
+  def getInternalPartitonSchemaForCDFAddRemoveFile(
+      includeCommitVersion: Boolean = true): Map[String, DataType] =
+    getInternalPartitonSchemaForCDC(includeCommitVersion) + (change_type_col_name -> StringType)
 }
 
 private[sharing] case class DeltaTableMetadata(

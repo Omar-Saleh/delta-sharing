@@ -114,6 +114,21 @@ class DeltaSharingRestClientSuite extends DeltaSharingIntegrationTest {
     }
   }
 
+  test("advertise versionless CDF capability") {
+    Seq(false, true).foreach { forStreaming =>
+      val client = new DeltaSharingRestClient(
+        unitTestProfileProvider, forStreaming = forStreaming)
+      try {
+        val request = client.prepareHeaders(
+          new HttpGet("http://localhost/test"), setIncludeEndStreamAction = false)
+        val capabilities = request.getFirstHeader(DELTA_SHARING_CAPABILITIES_HEADER).getValue
+        assert(capabilities.toLowerCase.contains(s"$VERSIONLESS_CDF=true") == !forStreaming)
+      } finally {
+        client.close()
+      }
+    }
+  }
+
   test("parse versionless view CDF responses") {
     Seq(RESPONSE_FORMAT_PARQUET, RESPONSE_FORMAT_DELTA).foreach { responseFormat =>
       val metadata =
@@ -356,7 +371,9 @@ class DeltaSharingRestClientSuite extends DeltaSharingIntegrationTest {
       responseFormat: String,
       readerFeatures: String,
       endStreamActionEnabled: Boolean): Unit = {
-      val expected = s"${RESPONSE_FORMAT}=$responseFormat$readerFeatures" +
+      val versionlessCDF = if (request.getFirstHeader(HttpHeaders.USER_AGENT).getValue
+          .contains(SPARK_STRUCTURED_STREAMING)) "" else s";$VERSIONLESS_CDF=true"
+      val expected = s"${RESPONSE_FORMAT}=$responseFormat$versionlessCDF$readerFeatures" +
         getEndStreamActionHeader(endStreamActionEnabled)
       val h = request.getFirstHeader(DELTA_SHARING_CAPABILITIES_HEADER)
       assert(h.getValue == expected)

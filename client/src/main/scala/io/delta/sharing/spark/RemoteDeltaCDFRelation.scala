@@ -41,27 +41,50 @@ case class RemoteDeltaCDFRelation(
     table: DeltaSharingTable,
     cdfOptions: Map[String, String]) extends BaseRelation with PrunedFilteredScan {
 
-  override def schema: StructType = DeltaTableUtils.addCdcSchema(snapshotToUse.schema)
+  private lazy val deltaTableFiles = client.getCDFFiles(table, cdfOptions, false, None)
+
+  private lazy val baseSchema = {
+    if (deltaTableFiles.isVersionlessCDF) {
+      DeltaTableUtils.toSchema(deltaTableFiles.metadata.schemaString)
+    } else {
+      snapshotToUse.schema
+    }
+  }
+
+  private[sharing] lazy val fileIndexParams = {
+    val partitionSchemaOverride = if (deltaTableFiles.isVersionlessCDF) {
+      Some(new StructType(
+        deltaTableFiles.metadata.partitionColumns.map(column => baseSchema(column)).toArray))
+    } else {
+      None
+    }
+    new RemoteDeltaFileIndexParams(
+      spark,
+      snapshotToUse,
+      client.getProfileProvider,
+      Some(QueryUtils.getQueryParamsHashId(cdfOptions)),
+      includeCommitVersion = !deltaTableFiles.isVersionlessCDF,
+      partitionSchemaOverride = partitionSchemaOverride,
+      useActionSizes = deltaTableFiles.isVersionlessCDF)
+  }
+
+  override lazy val schema: StructType = {
+    DeltaTableUtils.addCdcSchema(
+      baseSchema, includeCommitVersion = !deltaTableFiles.isVersionlessCDF)
+  }
 
   override def sqlContext: SQLContext = spark.sqlContext
 
   override def buildScan(
       requiredColumns: Array[String],
       filters: Array[Filter]): RDD[Row] = {
-    val deltaTabelFiles = client.getCDFFiles(table, cdfOptions, false, None)
-
     DeltaSharingCDFReader.changesToDF(
-      new RemoteDeltaFileIndexParams(
-        spark,
-        snapshotToUse,
-        client.getProfileProvider,
-        Some(QueryUtils.getQueryParamsHashId(cdfOptions))
-      ),
+      fileIndexParams,
       requiredColumns,
-      deltaTabelFiles.addFiles,
-      deltaTabelFiles.cdfFiles,
-      deltaTabelFiles.removeFiles,
-      DeltaTableUtils.addCdcSchema(deltaTabelFiles.metadata.schemaString),
+      deltaTableFiles.addFiles,
+      deltaTableFiles.cdfFiles,
+      deltaTableFiles.removeFiles,
+      schema,
       false,
       _ => {
         val d = client.getCDFFiles(table, cdfOptions, false, None)
@@ -73,9 +96,9 @@ case class RemoteDeltaCDFRelation(
       },
       System.currentTimeMillis(),
       DeltaSharingCDFReader.getMinUrlExpiration(
-        deltaTabelFiles.addFiles,
-        deltaTabelFiles.cdfFiles,
-        deltaTabelFiles.removeFiles
+        deltaTableFiles.addFiles,
+        deltaTableFiles.cdfFiles,
+        deltaTableFiles.removeFiles
       )
     ).rdd
   }

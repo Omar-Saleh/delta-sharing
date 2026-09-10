@@ -1688,6 +1688,9 @@ class DeltaSharingRestClient(
   // Example: "capability1=value1;capability2=value3,value4,value5"
   private def constructDeltaSharingCapabilities(setIncludeEndStreamAction: Boolean): String = {
     var capabilities = Seq[String](s"${RESPONSE_FORMAT}=$responseFormat")
+    if (!forStreaming) {
+      capabilities = capabilities :+ s"$VERSIONLESS_CDF=true"
+    }
     if (responseFormatSet.contains(RESPONSE_FORMAT_DELTA) && readerFeatures.nonEmpty) {
       capabilities = capabilities :+ s"$READER_FEATURES=$readerFeatures"
     }
