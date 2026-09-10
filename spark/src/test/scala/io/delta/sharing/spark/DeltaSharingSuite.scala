@@ -422,6 +422,42 @@ class DeltaSharingSuite extends QueryTest with SharedSparkSession with DeltaShar
     assert (result2.getMessage.contains("Please use a timestamp less"))
   }
 
+  Seq("parquet", "delta").foreach { responseFormat =>
+    integrationTest(s"view CDF with $responseFormat response format") {
+      val sharingOptions = Map(
+        "endpoint" -> "http://localhost:12346/delta-sharing",
+        "bearerToken" -> "token",
+        "shareCredentialsVersion" -> "1")
+
+      def loadChanges(objectName: String) = {
+        spark.read.format("deltaSharing")
+          .options(sharingOptions)
+          .option("responseFormat", responseFormat)
+          .option("readChangeFeed", "true")
+          .option("startingTimestamp", "2022-05-09T00:00:00Z")
+          .option("endingTimestamp", "2022-05-11T00:00:00Z")
+          .load(s"view_share.default.$objectName")
+      }
+
+      val viewChanges = loadChanges("view")
+      assert(viewChanges.columns.sameElements(
+        Array("value", "_commit_timestamp", "_change_type")))
+      checkAnswer(viewChanges, Seq(
+        Row("first", 1652140800000L, "insert"),
+        Row("second", 1652140800000L, "delete")))
+
+      if (responseFormat == "parquet") {
+        // The control table receives the same client capability but must retain commit versions.
+        val tableChanges = loadChanges("table")
+        assert(tableChanges.columns.sameElements(
+          Array("value", "_commit_version", "_commit_timestamp", "_change_type")))
+        checkAnswer(tableChanges, Seq(
+          Row("first", 1L, 1652140800000L, "insert"),
+          Row("second", 1L, 1652140800000L, "delete")))
+      }
+    }
+  }
+
   integrationTest("table_changes: cdf_table_with_vacuum") {
     val tablePath = testProfileFile.getCanonicalPath + "#share8.default.cdf_table_with_vacuum"
 
